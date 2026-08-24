@@ -29,7 +29,7 @@ jobs:
             qemu-img qemu-system-x86-core squashfs-tools \
             xorriso xz git findutils file patch bc flex bison \
             autoconf automake libtool openssl-devel \
-            elfutils-libelf-devel perl dwarves util-linux-core python3
+            elfutils-libelf-devel perl dwarves util-linux-core python3 llvm
 
       - name: Check out repository
         uses: actions/checkout@v4
@@ -55,7 +55,10 @@ jobs:
         working-directory: limine
         run: |
           ./bootstrap
-          ./configure LD_FOR_TARGET=/usr/bin/ld CC_FOR_TARGET=/usr/bin/gcc
+          ./configure \
+            LD_FOR_TARGET=/usr/bin/ld \
+            CC_FOR_TARGET=/usr/bin/gcc \
+            OBJCOPY_FOR_TARGET=/usr/bin/objcopy
           make -j2
 
       - name: Create kernel configuration
