@@ -29,7 +29,7 @@ jobs:
             qemu-img qemu-system-x86-core squashfs-tools \
             xorriso xz git findutils file patch bc flex bison \
             autoconf automake libtool openssl-devel \
-            elfutils-libelf-devel perl dwarves busybox-static util-linux-core python3
+            elfutils-libelf-devel perl dwarves util-linux-core python3
 
       - name: Check out repository
         uses: actions/checkout@v4
