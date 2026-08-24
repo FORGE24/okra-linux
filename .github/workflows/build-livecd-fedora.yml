@@ -43,6 +43,19 @@ jobs:
           path: linux-7.2
           fetch-depth: 1
 
+      - name: Check out OkraPM kernel interface
+        uses: actions/checkout@v4
+        with:
+          repository: OkraLinux/okrapm
+          path: okrapm-source
+          fetch-depth: 1
+
+      - name: Install OkraPM kernel interface
+        run: |
+          mkdir -p linux-7.2/okrapm
+          cp -a okrapm-source/Kconfig okrapm-source/Makefile \
+            okrapm-source/include okrapm-source/src linux-7.2/okrapm/
+
       - name: Check out Limine
         uses: actions/checkout@v4
         with:
