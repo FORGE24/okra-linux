@@ -76,6 +76,27 @@ settings:
 console=tty0 nomodeset audit=0 systemd.show_status=false rd.live.image
 ```
 
+## GitHub Actions Fedora build
+
+GitHub Actions builds the LiveCD inside a Fedora container using
+`.github/workflows/build-livecd-fedora.yml`. It creates a Fedora-based rootfs,
+produces the BIOS/UEFI ISO, validates the ISO, and uploads it as a workflow
+artifact.
+
+Run it automatically by pushing to `main` or opening a pull request. It can
+also be started manually from the Actions tab with `workflow_dispatch`.
+
+The local equivalent is:
+
+```bash
+FEDORA_ROOTFS=1 FEDORA_RELEASE=41 SKIP_QEMU=1 \
+  live-build/scripts/build-livecd
+```
+
+The workflow intentionally skips QEMU because GitHub-hosted container jobs do
+not provide reliable nested virtualization. QEMU boot testing should run on a
+self-hosted runner or locally after downloading the artifact.
+
 ## Development rules
 
 Keep generated ISO files, SquashFS images, initramfs archives, kernel images,

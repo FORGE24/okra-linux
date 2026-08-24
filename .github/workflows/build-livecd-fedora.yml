@@ -1,0 +1,57 @@
+name: Build OkraLinux LiveCD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  livecd:
+    name: Fedora ${{ matrix.release }} LiveCD
+    runs-on: ubuntu-24.04
+    container:
+      image: fedora:${{ matrix.release }}
+      options: --privileged
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ['41']
+    steps:
+      - name: Install build dependencies
+        run: |
+          dnf -y update
+          dnf -y install \
+            bash binutils cpio gcc gzip make mtools \
+            qemu-img qemu-system-x86-core squashfs-tools \
+            xorriso xz git findutils file
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build Fedora rootfs and LiveCD
+        env:
+          FEDORA_ROOTFS: '1'
+          FEDORA_RELEASE: ${{ matrix.release }}
+          SKIP_QEMU: '1'
+          JOBS: '2'
+        run: |
+          chmod +x live-build/scripts/* live-build/initramfs/init
+          live-build/scripts/build-livecd
+
+      - name: Validate ISO
+        run: |
+          test -s okra-linux-livecd.iso
+          file okra-linux-livecd.iso
+          xorriso -indev okra-linux-livecd.iso -toc
+
+      - name: Upload LiveCD artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: okralinux-livecd-fedora-${{ matrix.release }}
+          path: okra-linux-livecd.iso
+          if-no-files-found: error
+          compression-level: 0

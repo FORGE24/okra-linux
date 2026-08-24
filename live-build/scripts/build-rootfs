@@ -2,7 +2,31 @@
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
-require_rootfs
+require_rootfs() {
+    [ -d "$ROOTFS" ] || die "rootfs does not exist: $ROOTFS"
+    [ -x "$ROOTFS/usr/lib/systemd/systemd" ] || die "systemd missing from rootfs"
+}
+
+if [ "${FEDORA_ROOTFS:-0}" = 1 ]; then
+    require dnf
+    log "building Fedora rootfs"
+    rm -rf "$ROOTFS"
+    mkdir -p "$ROOTFS"
+    dnf -y --installroot="$ROOTFS" \
+        --releasever="${FEDORA_RELEASE:-latest}" \
+        --setopt=install_weak_deps=False \
+        --setopt=keepcache=False \
+        install systemd bash coreutils util-linux kmod iproute procps-ng \
+        filesystem setup shadow-utils
+    mkdir -p "$ROOTFS/etc" "$ROOTFS/var/lib/rpm" "$ROOTFS/run" "$ROOTFS/tmp"
+    : > "$ROOTFS/etc/machine-id"
+    printf 'okralinux\n' > "$ROOTFS/etc/hostname"
+    printf 'proc /proc proc defaults 0 0\n' > "$ROOTFS/etc/fstab"
+    chmod 1777 "$ROOTFS/tmp"
+else
+    require_rootfs
+fi
+
 log "using rootfs"
 printf 'rootfs: %s\n' "$ROOTFS"
 printf 'systemd: %s\n' "$ROOTFS/usr/lib/systemd/systemd"
