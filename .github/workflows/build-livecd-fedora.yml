@@ -27,12 +27,56 @@ jobs:
           dnf -y install \
             bash binutils cpio gcc gzip make mtools \
             qemu-img qemu-system-x86-core squashfs-tools \
-            xorriso xz git findutils file
+            xorriso xz git findutils file bc flex bison \
+            openssl-devel elfutils-libelf-devel perl dwarves
 
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          path: okra-linux
+
+      - name: Check out OkraLinux kernel
+        uses: actions/checkout@v4
+        with:
+          repository: OkraLinux/KERNEL
+          path: linux-7.2
+          fetch-depth: 1
+
+      - name: Check out Limine
+        uses: actions/checkout@v4
+        with:
+          repository: limine-bootloader/limine
+          path: limine
+          ref: v12.x
+          fetch-depth: 1
+
+      - name: Build Limine tools
+        working-directory: limine
+        run: |
+          ./bootstrap
+          ./configure LD_FOR_TARGET=/usr/bin/ld CC_FOR_TARGET=/usr/bin/gcc
+          make -j2
+
+      - name: Create kernel configuration
+        working-directory: linux-7.2
+        run: |
+          make defconfig
+          scripts/config --enable DEVTMPFS
+          scripts/config --enable DEVTMPFS_MOUNT
+          scripts/config --enable BLK_DEV_LOOP
+          scripts/config --enable BLK_DEV_SR
+          scripts/config --enable ISO9660_FS
+          scripts/config --enable SQUASHFS
+          scripts/config --enable SQUASHFS_ZSTD
+          scripts/config --enable OVERLAY_FS
+          scripts/config --enable VIRTIO
+          scripts/config --enable VIRTIO_PCI
+          scripts/config --enable VIRTIO_BLK
+          scripts/config --enable OKRAPM
+          make olddefconfig
 
       - name: Build Fedora rootfs and LiveCD
+        working-directory: okra-linux
         env:
           FEDORA_ROOTFS: '1'
           FEDORA_RELEASE: ${{ matrix.release }}
@@ -43,6 +87,7 @@ jobs:
           live-build/scripts/build-livecd
 
       - name: Validate ISO
+        working-directory: okra-linux
         run: |
           test -s okra-linux-livecd.iso
           file okra-linux-livecd.iso
@@ -52,6 +97,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: okralinux-livecd-fedora-${{ matrix.release }}
-          path: okra-linux-livecd.iso
+          path: okra-linux/okra-linux-livecd.iso
           if-no-files-found: error
           compression-level: 0
