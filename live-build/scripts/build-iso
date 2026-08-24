@@ -1,0 +1,26 @@
+#!/bin/bash
+set -euo pipefail
+source "$(dirname "$0")/common.sh"
+
+require xorriso
+[ -x "$LIMINE_BIN" ] || die "Limine binary missing: $LIMINE_BIN"
+for file in "$ISO_ROOT/boot/vmlinuz" "$ISO_ROOT/boot/initramfs-live.img" "$ISO_ROOT/LiveOS/rootfs.squashfs" "$ISO_ROOT/limine.conf"; do
+    [ -f "$file" ] || die "missing ISO input: $file"
+done
+log "building ISO"
+rm -f "$ISO_IMAGE"
+xorriso -as mkisofs \
+    -R -r -J \
+    -V OKRALINUX_LIVE \
+    -b boot/limine-bios-cd.bin \
+    -no-emul-boot \
+    -boot-load-size 4 \
+    -boot-info-table \
+    --efi-boot boot/limine-uefi-cd.bin \
+    -efi-boot-part \
+    --efi-boot-image \
+    --protective-msdos-label \
+    "$ISO_ROOT" \
+    -o "$ISO_IMAGE"
+"$LIMINE_BIN" bios-install "$ISO_IMAGE"
+printf 'ISO: %s\n' "$ISO_IMAGE"

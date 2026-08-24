@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+source "$(dirname "$0")/common.sh"
+
+require mksquashfs
+require_rootfs
+mkdir -p "$ISO_ROOT/LiveOS"
+log "building SquashFS"
+mksquashfs "$ROOTFS" "$LIVE_BUILD/rootfs.squashfs" -comp zstd -b 1M -noappend -processors "$JOBS"
+cp "$LIVE_BUILD/rootfs.squashfs" "$ISO_ROOT/LiveOS/rootfs.squashfs"
+log "SquashFS copied to $ISO_ROOT/LiveOS/rootfs.squashfs"

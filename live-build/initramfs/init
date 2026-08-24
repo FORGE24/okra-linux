@@ -1,0 +1,49 @@
+#!/bin/sh
+PATH=/bin
+export PATH
+
+halt_init() {
+    echo "LiveCD init: $1"
+    echo "LiveCD init: emergency shell"
+    exec /bin/sh
+}
+
+mkdir -p /proc /sys /dev /run /cdrom /newroot /lower /upper
+mount -t proc proc /proc || halt_init "mount proc failed"
+mount -t sysfs sysfs /sys || halt_init "mount sysfs failed"
+mount -t devtmpfs devtmpfs /dev || halt_init "mount devtmpfs failed"
+mount -t tmpfs tmpfs /run || halt_init "mount run tmpfs failed"
+mkdir -p /run/systemd/system /run/lock /run/log /run/user/0
+
+exec 2>&1
+set -x
+echo "LiveCD init: start"
+export PATH=/bin:/usr/bin:/sbin:/usr/sbin
+mkdir -p /upper/upper /upper/work
+
+while :; do
+    for dev in /dev/sr0 /dev/hdc /dev/cdrom; do
+        [ -b "$dev" ] || continue
+        echo "LiveCD init: trying $dev"
+        mount -t iso9660 -o ro "$dev" /cdrom 2>/dev/null || continue
+        if [ -f /cdrom/LiveOS/rootfs.squashfs ]; then
+            echo "LiveCD init: found rootfs on $dev"
+            break 2
+        fi
+        umount /cdrom 2>/dev/null
+    done
+    sleep 1
+done
+
+mount -t squashfs -o ro /cdrom/LiveOS/rootfs.squashfs /lower || halt_init "mount squashfs failed"
+mount -t tmpfs tmpfs /upper || halt_init "mount tmpfs failed"
+mkdir -p /upper/upper /upper/work /newroot
+mount -t overlay overlay -o lowerdir=/lower,upperdir=/upper/upper,workdir=/upper/work /newroot || halt_init "mount overlay failed"
+mkdir -p /newroot/dev /newroot/proc /newroot/sys /newroot/run
+mount --move /dev /newroot/dev || halt_init "move dev failed"
+mount --move /proc /newroot/proc || halt_init "move proc failed"
+mount --move /sys /newroot/sys || halt_init "move sys failed"
+mount --move /run /newroot/run || halt_init "move run failed"
+echo "LiveCD init: switching root"
+mkdir -p /newroot/oldroot
+exec /bin/switch_root /newroot /usr/lib/systemd/systemd

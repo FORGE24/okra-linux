@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+source "$(dirname "$0")/common.sh"
+
+require make
+[ -f "$KERNEL_TREE/.config" ] || die "kernel .config missing"
+log "building kernel"
+make -C "$KERNEL_TREE" -j"$JOBS" bzImage
+mkdir -p "$ISO_ROOT/boot"
+cp "$KERNEL_IMAGE" "$ISO_ROOT/boot/vmlinuz"
+log "kernel copied to $ISO_ROOT/boot/vmlinuz"

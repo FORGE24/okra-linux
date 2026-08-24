@@ -1,0 +1,12 @@
+# Generated build outputs
+*.iso
+*.img
+*.squashfs
+*.cpio
+*.cpio.gz
+*.log
+live-build/initramfs-live.img
+live-build/rootfs.squashfs
+live-build/iso-root/LiveOS/
+live-build/iso-root/boot/vmlinuz
+live-build/iso-root/boot/initramfs-live.img
