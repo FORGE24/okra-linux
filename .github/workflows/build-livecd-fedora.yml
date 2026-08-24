@@ -27,8 +27,9 @@ jobs:
           dnf -y install \
             bash binutils cpio gcc gzip make mtools \
             qemu-img qemu-system-x86-core squashfs-tools \
-            xorriso xz git findutils file bc flex bison \
-            openssl-devel elfutils-libelf-devel perl dwarves
+            xorriso xz git findutils file patch bc flex bison \
+            autoconf automake libtool openssl-devel \
+            elfutils-libelf-devel perl dwarves busybox-static util-linux-core python3
 
       - name: Check out repository
         uses: actions/checkout@v4
@@ -74,6 +75,33 @@ jobs:
           scripts/config --enable VIRTIO_BLK
           scripts/config --enable OKRAPM
           make olddefconfig
+
+      - name: Prepare initramfs runtime libraries
+        working-directory: okra-linux
+        run: |
+          mkdir -p live-build/initramfs/lib64
+          python3 - <<'PY'
+          import os
+          import re
+          import shutil
+          import subprocess
+          from pathlib import Path
+
+          initramfs = Path('live-build/initramfs')
+          destination = initramfs / 'lib64'
+          binaries = [p for p in (initramfs / 'bin').iterdir() if p.is_file()]
+          libraries = set()
+          for binary in binaries:
+              result = subprocess.run(['ldd', str(binary)], text=True, capture_output=True, check=True)
+              for line in result.stdout.splitlines():
+                  match = re.search(r'=> (\S+)|^\s*(/\S+)', line)
+                  if match:
+                      path = match.group(1) or match.group(2)
+                      if os.path.isabs(path) and os.path.exists(path):
+                          libraries.add(path)
+          for path in libraries:
+              shutil.copy2(path, destination / os.path.basename(path))
+          PY
 
       - name: Build Fedora rootfs and LiveCD
         working-directory: okra-linux
