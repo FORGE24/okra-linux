@@ -16,7 +16,6 @@ mount -t tmpfs tmpfs /run || halt_init "mount run tmpfs failed"
 mkdir -p /run/systemd/system /run/lock /run/log /run/user/0
 
 exec 2>&1
-set -x
 echo "LiveCD init: start"
 export PATH=/bin:/usr/bin:/sbin:/usr/sbin
 mkdir -p /upper/upper /upper/work
@@ -44,6 +43,269 @@ mount --move /dev /newroot/dev || halt_init "move dev failed"
 mount --move /proc /newroot/proc || halt_init "move proc failed"
 mount --move /sys /newroot/sys || halt_init "move sys failed"
 mount --move /run /newroot/run || halt_init "move run failed"
+# Live mounts must be created on the moved /run. Doing it earlier leaves them
+# on the overlay directory, and this tmpfs covers them so /run/live vanishes.
+mkdir -p /newroot/run/live/media /newroot/run/live/rootfs
+mount --move /cdrom /newroot/run/live/media || halt_init "move cdrom failed"
+mount --move /lower /newroot/run/live/rootfs || halt_init "move lower failed"
+
+# OKRALINUX systemd was built without libmount. PID 1 then fails in
+# mount_option_mangle() with EOPNOTSUPP while mounting /dev/shm and
+# cgroup2. Pre-mount them so systemd treats them as already present.
+mkdir -p /newroot/dev/shm /newroot/dev/pts /newroot/sys/fs/cgroup /newroot/tmp
+mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /newroot/dev/shm || halt_init "mount /dev/shm failed"
+mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /newroot/tmp || true
+mount -t devpts -o mode=0620,ptmxmode=0666,gid=5 devpts /newroot/dev/pts 2>/dev/null || \
+    mount -t devpts -o mode=0620,ptmxmode=0666 devpts /newroot/dev/pts || true
+if ! mount -t cgroup2 -o nsdelegate,memory_recursiveprot cgroup2 /newroot/sys/fs/cgroup 2>/dev/null; then
+    mount -t cgroup2 cgroup2 /newroot/sys/fs/cgroup || halt_init "mount cgroup2 failed"
+fi
+
+# Overlay GNU coreutils and drop leftover BusyBox applets.
+if [ -d /gnu-coreutils/usr/bin ]; then
+    mkdir -p /newroot/usr/bin /newroot/usr/libexec/coreutils
+    cp -a /gnu-coreutils/usr/bin/. /newroot/usr/bin/
+    if [ -d /gnu-coreutils/usr/libexec/coreutils ]; then
+        cp -a /gnu-coreutils/usr/libexec/coreutils/. /newroot/usr/libexec/coreutils/
+    fi
+    for f in /gnu-coreutils/usr/bin/*; do
+        name=${f##*/}
+        [ "$name" = "[" ] && continue
+        ln -sfn "../usr/bin/$name" "/newroot/bin/$name"
+    done
+fi
+# Fedora installer tools (sfdisk, rsync, mkfs, limine). Their loader and
+# libraries stay private so they do not replace Okra libc.
+if [ -d /okrainstall-tools/bin ]; then
+    mkdir -p /newroot/usr/lib/okrainstall/tools /newroot/usr/bin
+    cp -a /okrainstall-tools/. /newroot/usr/lib/okrainstall/tools/
+    for t in /okrainstall-tools/bin/*; do
+        [ -f "$t" ] || continue
+        [ -x "$t" ] || continue
+        name=${t##*/}
+        cat > "/newroot/usr/bin/$name" <<EOF
+#!/bin/sh
+export MKE2FS_CONFIG=/usr/lib/okrainstall/tools/mke2fs.conf
+export MTOOLS_SKIP_CHECK=1
+export GCONV_PATH=/usr/lib/okrainstall/tools/gconv
+exec /usr/lib/okrainstall/tools/ld-linux-x86-64.so.2 --library-path /usr/lib/okrainstall/tools/lib /usr/lib/okrainstall/tools/bin/$name "\$@"
+EOF
+        chmod 755 "/newroot/usr/bin/$name"
+    done
+    if [ -f /okrainstall-tools/bin/limine-bios.sys ]; then
+        cp /okrainstall-tools/bin/limine-bios.sys /newroot/usr/bin/limine-bios.sys
+    fi
+fi
+# util-linux mount/umount are only under /bin. The installer service's PATH
+# does not include /bin, so publish them where systemd looks.
+for cmd in mount umount; do
+    if [ -x "/newroot/bin/$cmd" ] && [ ! -e "/newroot/usr/bin/$cmd" ]; then
+        ln -sfn "/bin/$cmd" "/newroot/usr/bin/$cmd"
+    fi
+done
+if [ -d /okrainstall-payload/lib ]; then
+    mkdir -p /newroot/usr/bin /newroot/usr/libexec /newroot/usr/lib/okrainstall \
+        /newroot/usr/lib/systemd/system
+    cp /okrainstall-payload/bin/okrainstall /newroot/usr/bin/okrainstall
+    chmod 755 /newroot/usr/bin/okrainstall
+    cp /okrainstall-payload/libexec/okrainstall-stage1 /newroot/usr/libexec/okrainstall-stage1
+    chmod 755 /newroot/usr/libexec/okrainstall-stage1
+    cp /okrainstall-payload/lib/*.sh /newroot/usr/lib/okrainstall/
+    if [ -f /okrainstall-payload/stage2-packages.list ]; then
+        cp /okrainstall-payload/stage2-packages.list /newroot/usr/lib/okrainstall/
+    fi
+    if [ -d /okrainstall-payload/grub-theme ]; then
+        rm -rf /newroot/usr/lib/okrainstall/grub-theme
+        cp -a /okrainstall-payload/grub-theme /newroot/usr/lib/okrainstall/grub-theme
+    fi
+    if [ -f /okrainstall-payload/grub/BOOTX64.EFI ]; then
+        mkdir -p /newroot/usr/lib/okrainstall/grub
+        cp /okrainstall-payload/grub/BOOTX64.EFI /newroot/usr/lib/okrainstall/grub/BOOTX64.EFI
+    fi
+    cp /okrainstall-payload/systemd/*.service /newroot/usr/lib/systemd/system/
+fi
+# Drop leftover BusyBox applet symlinks. readlink is staged into the initramfs.
+for d in /newroot/bin /newroot/sbin /newroot/usr/bin /newroot/usr/sbin; do
+    [ -d "$d" ] || continue
+    for link in "$d"/*; do
+        [ -L "$link" ] || continue
+        case "$(readlink "$link")" in
+            busybox|*/busybox) rm -f "$link" ;;
+        esac
+    done
+done
+rm -f /newroot/bin/busybox /newroot/sbin/busybox /newroot/usr/bin/busybox
+rm -f /newroot/etc/systemd/system/getty@.service.d/busybox.conf \
+    /newroot/etc/systemd/system/serial-getty@.service.d/busybox.conf
+if [ -x /okrapm/lunar ]; then
+    mkdir -p /newroot/usr/bin /newroot/lib64
+    cp /okrapm/lunar /newroot/usr/bin/lunar
+    chmod 0755 /newroot/usr/bin/lunar
+    ln -sfn lunar /newroot/usr/bin/okrapm
+    ln -sfn lunar /newroot/usr/bin/okpm
+    for lib in libstdc++.so.6 libgcc_s.so.1; do
+        if [ -f "/okrapm/$lib" ] && [ ! -e "/newroot/lib64/$lib" ]; then
+            mkdir -p /newroot/lib64
+            cp "/okrapm/$lib" "/newroot/lib64/$lib"
+            chmod 0755 "/newroot/lib64/$lib"
+        fi
+    done
+    if [ -x /okrapm/wget ]; then
+        cp /okrapm/wget /newroot/usr/bin/wget
+        chmod 0755 /newroot/usr/bin/wget
+    fi
+    if [ -x /okrapm/tar ]; then
+        cp /okrapm/tar /newroot/bin/tar
+        chmod 0755 /newroot/bin/tar
+    fi
+    mkdir -p /newroot/var/lib/lunar/repos
+    printf 'okra|remote|http://10.0.2.2:8765|1\n' > /newroot/var/lib/lunar/repos/repos.conf
+fi
+
+# One login shell on the QEMU serial console. Do not also start debug-shell,
+# console-getty, or serial-getty — they share ttyS0 and eat keystrokes.
+mkdir -p \
+    /newroot/etc/systemd/system/multi-user.target.wants \
+    /newroot/etc/systemd/system/getty.target.wants \
+    /newroot/etc/systemd/system/sysinit.target.wants \
+    /newroot/etc/systemd/system/systemd-udevd.service.d \
+    /newroot/root
+ln -sf /dev/null /newroot/etc/systemd/system/serial-getty@ttyS0.service
+ln -sf /dev/null /newroot/etc/systemd/system/console-getty.service
+ln -sf /dev/null /newroot/etc/systemd/system/debug-shell.service
+ln -sf /dev/null /newroot/etc/systemd/system/systemd-ask-password-console.path
+ln -sf /dev/null /newroot/etc/systemd/system/systemd-ask-password-console.service
+ln -sf /dev/null /newroot/etc/systemd/system/ldconfig.service
+ln -sf /dev/null /newroot/etc/systemd/system/systemd-udevd.service
+ln -sf /dev/null /newroot/etc/systemd/system/systemd-udev-trigger.service
+ln -sf /dev/null /newroot/etc/systemd/system/systemd-udev-settle.service
+ln -sf /dev/null /newroot/etc/systemd/system/systemd-hwdb-update.service
+ln -sf /dev/null /newroot/etc/systemd/system/kmod-static-nodes.service
+ln -sf /dev/null /newroot/etc/systemd/system/systemd-modules-load.service
+ln -sf /dev/null /newroot/etc/systemd/system/modprobe@fuse.service
+rm -f /newroot/etc/systemd/system/sysinit.target.wants/debug-shell.service \
+    /newroot/etc/systemd/system/sysinit.target.wants/systemd-udevd.service \
+    /newroot/etc/systemd/system/sysinit.target.wants/systemd-udev-trigger.service \
+    /newroot/etc/systemd/system/sysinit.target.wants/ldconfig.service \
+    /newroot/etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service \
+    /newroot/etc/systemd/system/getty.target.wants/console-getty.service \
+    /newroot/etc/systemd/system/getty.target.wants/getty@tty1.service
+# Never copy the initramfs dynamic linker onto the live root. That loader is
+# the host (Fedora) ld.so; Okra libc.so.6 needs a GLOBAL __pointer_chk_guard
+# from matching glibc 2.44 ld.so. Mixing them panics PID 1:
+#   systemd: undefined symbol: __pointer_chk_guard
+if [ ! -x /newroot/bin/bash ] && [ -x /bin/bash ]; then
+    cp /bin/bash /newroot/bin/bash
+    chmod 0755 /newroot/bin/bash
+fi
+if [ -x /newroot/bin/bash ]; then
+    ln -sfn bash /newroot/bin/sh
+    ln -sfn bash /newroot/bin/ash
+fi
+printf 'root:x:0:0:root:/root:/bin/bash\ndhcpcd:x:996:996:Minimalistic DHCP client:/var/lib/dhcpcd:/sbin/nologin\nnobody:x:65534:65534:nobody:/:/bin/false\n' > /newroot/etc/passwd
+cat > /newroot/etc/group <<'EOF'
+root:x:0:
+bin:x:1:
+daemon:x:2:
+sys:x:3:
+adm:x:4:
+tty:x:5:
+disk:x:6:
+lp:x:7:
+mem:x:8:
+kmem:x:9:
+wheel:x:10:
+cdrom:x:11:
+mail:x:12:
+man:x:15:
+dialout:x:18:
+floppy:x:19:
+games:x:20:
+tape:x:33:
+video:x:39:
+ftp:x:50:
+lock:x:54:
+audio:x:63:
+users:x:100:
+utmp:x:22:
+input:x:104:
+kvm:x:36:
+render:x:105:
+systemd-journal:x:190:
+dhcpcd:x:996:
+nobody:x:65534:
+nogroup:x:65534:
+EOF
+cat > /newroot/etc/profile <<'EOF'
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/root
+export TERM="${TERM:-linux}"
+export HISTFILE=/root/.bash_history
+export HISTSIZE=1000
+umask 022
+# After systemd boot logs, start a clean bash-style session.
+if [ -z "$OKRA_LOGIN_CLEARED" ]; then
+    export OKRA_LOGIN_CLEARED=1
+    printf '\033[2J\033[H'
+    printf 'OkraLinux Base OS 0\n\n'
+fi
+[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"
+EOF
+cat > /newroot/root/.bashrc <<'EOF'
+set -o emacs
+PS1='[\u@\h \W]\$ '
+export PS1
+alias ls='ls --color=auto'
+alias ll='ls -l --color=auto'
+alias la='ls -la --color=auto'
+alias l='ls -CF'
+EOF
+cat > /newroot/root/.profile <<'EOF'
+# login already sourced /etc/profile
+EOF
+cat > /newroot/etc/systemd/system/autologin-console.service <<'EOF'
+[Unit]
+Description=Autologin shell on console
+After=basic.target
+Conflicts=rescue.service
+ConditionPathExists=/dev/console
+
+[Service]
+Type=idle
+Environment=HOME=/root TERM=linux PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/root
+ExecStart=/bin/bash -l
+Restart=always
+RestartSec=1
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/console
+TTYReset=no
+TTYVHangup=no
+IgnoreSIGPIPE=no
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ln -sf /etc/systemd/system/autologin-console.service \
+    /newroot/etc/systemd/system/multi-user.target.wants/autologin-console.service
+if [ -x /newroot/usr/bin/dhcpcd ]; then
+    mkdir -p /newroot/usr/sbin /newroot/var/lib/dhcpcd \
+        /newroot/etc/systemd/system/multi-user.target.wants
+    ln -sfn ../bin/dhcpcd /newroot/usr/sbin/dhcpcd
+    ln -sfn /usr/lib/systemd/system/dhcpcd.service \
+        /newroot/etc/systemd/system/multi-user.target.wants/dhcpcd.service
+fi
+cat > /newroot/etc/systemd/system/systemd-udevd.service.d/nonamespace.conf <<'EOF'
+[Service]
+PrivateMounts=no
+ProtectKernelTunables=no
+ProtectSystem=no
+ProtectHome=no
+EOF
+
 echo "LiveCD init: switching root"
 mkdir -p /newroot/oldroot
 exec /bin/switch_root /newroot /usr/lib/systemd/systemd

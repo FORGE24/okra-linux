@@ -5,7 +5,22 @@ source "$(dirname "$0")/common.sh"
 require mksquashfs
 require_rootfs
 mkdir -p "$ISO_ROOT/LiveOS"
-log "building SquashFS"
-mksquashfs "$ROOTFS" "$LIVE_BUILD/rootfs.squashfs" -comp zstd -b 1M -noappend -processors "$JOBS"
+log "building SquashFS from $ROOTFS"
+rm -f "$LIVE_BUILD/rootfs.squashfs"
+mksquashfs "$ROOTFS" "$LIVE_BUILD/rootfs.squashfs" -comp zstd -b 1M -noappend -processors "$JOBS" \
+    -e proc \
+    -e sys \
+    -e dev \
+    -e run \
+    -e tmp \
+    -e media \
+    -e mnt \
+    -e build-binutils-2.47 \
+    -e build-glibc-2.44 \
+    -e build-kernel-headers-7.2 \
+    -e build-systemd \
+    -e sources \
+    -e systemd-meson-setup.log \
+    -e lib/modules/7.2.0/build
 cp "$LIVE_BUILD/rootfs.squashfs" "$ISO_ROOT/LiveOS/rootfs.squashfs"
 log "SquashFS copied to $ISO_ROOT/LiveOS/rootfs.squashfs"

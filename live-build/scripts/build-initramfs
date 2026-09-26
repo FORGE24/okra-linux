@@ -4,8 +4,167 @@ source "$(dirname "$0")/common.sh"
 
 require cpio
 require gzip
-require_initramfs
 mkdir -p "$ISO_ROOT/boot"
+
+copy_runtime_dependencies() {
+    local binary path
+    for binary in "$@"; do
+        [ -x "$binary" ] || continue
+        ldd "$binary" | while read -r _ _ path _; do
+            case "$path" in
+                /*) install -Dm755 "$path" "$INITRAMFS_TREE$path" ;;
+            esac
+        done
+        ldd "$binary" | while read -r path _; do
+            case "$path" in
+                /*) install -Dm755 "$path" "$INITRAMFS_TREE$path" ;;
+            esac
+        done
+    done
+}
+
+install_tool() {
+    local dest_name="$1"
+    local src
+    src=$(command -v "$2") || die "host tool missing: $2"
+    install -Dm755 "$src" "$INITRAMFS_TREE/bin/$dest_name"
+}
+
+mkdir -p "$INITRAMFS_TREE/bin"
+for cmd in ln cat rm cp chmod mkdir sleep readlink; do
+    install_tool "$cmd" "$cmd"
+done
+install_tool bash bash
+ln -sfn bash "$INITRAMFS_TREE/bin/sh"
+install_tool mount mount
+install_tool umount umount
+install_tool switch_root switch_root
+rm -f "$INITRAMFS_TREE/bin/busybox"
+
+copy_runtime_dependencies "$INITRAMFS_TREE"/bin/*
+require_initramfs
+
+GNU_COREUTILS="$LIVE_BUILD/gnu-coreutils"
+if [ -d "$GNU_COREUTILS/usr/bin" ]; then
+    log "embedding GNU coreutils into initramfs overlay"
+    rm -rf "$INITRAMFS_TREE/gnu-coreutils"
+    mkdir -p "$INITRAMFS_TREE/gnu-coreutils"
+    cp -a "$GNU_COREUTILS/usr" "$INITRAMFS_TREE/gnu-coreutils/"
+fi
+
+LUNAR_BIN="${LUNAR_BIN:-$PROJECT_ROOT/../okrapm/build-okralinux/src/lunar/lunar}"
+[ -x "$LUNAR_BIN" ] || LUNAR_BIN="$PROJECT_ROOT/../okrapm/build/src/lunar/lunar"
+if [ -x "$LUNAR_BIN" ]; then
+    log "embedding lunar into initramfs overlay"
+    install -Dm755 "$LUNAR_BIN" "$INITRAMFS_TREE/okrapm/lunar"
+    for lib in libstdc++.so.6 libgcc_s.so.1; do
+        src="$ROOTFS/lib64/$lib"
+        [ -e "$src" ] || src="/lib64/$lib"
+        install -Dm755 "$(readlink -f "$src")" "$INITRAMFS_TREE/okrapm/$lib"
+    done
+    for cmd in tar wget; do
+        src=$(command -v "$cmd") || continue
+        install -Dm755 "$(readlink -f "$src")" "$INITRAMFS_TREE/okrapm/$cmd"
+        copy_runtime_dependencies "$INITRAMFS_TREE/okrapm/$cmd"
+    done
+fi
+
+# Tools the Live installer needs. The Base OS image does not ship them.
+# They run through Fedora's loader and a private library directory.
+bundle_installer_tools() {
+    local dest=$INITRAMFS_TREE/okrainstall-tools
+    local name src real soname path
+    rm -rf "$dest"
+    mkdir -p "$dest/bin" "$dest/lib"
+    install -Dm755 /lib64/ld-linux-x86-64.so.2 "$dest/ld-linux-x86-64.so.2"
+    if [ -f /etc/mke2fs.conf ]; then
+        install -Dm644 /etc/mke2fs.conf "$dest/mke2fs.conf"
+    fi
+
+    copy_one() {
+        local cmd=$1 destname=$2
+        src=$(command -v "$cmd") || die "host tool missing: $cmd"
+        real=$(readlink -f "$src")
+        install -Dm755 "$real" "$dest/bin/$destname"
+        while read -r soname arrow path _; do
+            [ "$arrow" = "=>" ] || continue
+            case "$path" in
+                /*) ;;
+                *) continue ;;
+            esac
+            install -Dm755 "$(readlink -f "$path")" "$dest/lib/$soname"
+        done < <(ldd "$real")
+    }
+
+    copy_one sfdisk sfdisk
+    copy_one blkid blkid
+    copy_one rsync rsync
+    copy_one mkfs.ext4 mkfs.ext4
+    copy_one mkfs.fat mkfs.fat
+    ln -sfn mkfs.fat "$dest/bin/mkfs.vfat"
+    # The Okra kernel has no vfat. mtools writes the EFI partition from userspace.
+    copy_one mtools mtools
+    ln -sfn mtools "$dest/bin/mcopy"
+    ln -sfn mtools "$dest/bin/mmd"
+    # mtools converts filenames with glibc iconv (CP850). The live root has no
+    # Fedora gconv modules, so ship the one module it needs.
+    mkdir -p "$dest/gconv"
+    install -Dm755 /usr/lib64/gconv/IBM850.so "$dest/gconv/IBM850.so"
+    cat >"$dest/gconv/gconv-modules" <<'EOF'
+alias	CP850//			IBM850//
+alias	850//			IBM850//
+module	IBM850//		INTERNAL		IBM850		1
+module	INTERNAL		IBM850//		IBM850		1
+EOF
+    local limine_bin=$PROJECT_ROOT/../limine/bin/limine
+    [ -x "$limine_bin" ] || die "limine binary missing: $limine_bin"
+    copy_one "$limine_bin" limine
+    install -Dm644 "$PROJECT_ROOT/../limine/bin/limine-bios.sys" "$dest/bin/limine-bios.sys"
+
+    log "checking bundled installer tools"
+    "$dest/ld-linux-x86-64.so.2" --library-path "$dest/lib" "$dest/bin/sfdisk" --version >/dev/null
+    "$dest/ld-linux-x86-64.so.2" --library-path "$dest/lib" "$dest/bin/rsync" --version >/dev/null
+    "$dest/ld-linux-x86-64.so.2" --library-path "$dest/lib" "$dest/bin/mkfs.ext4" -V >/dev/null
+    "$dest/ld-linux-x86-64.so.2" --library-path "$dest/lib" "$dest/bin/limine" --version >/dev/null
+    "$dest/ld-linux-x86-64.so.2" --library-path "$dest/lib" "$dest/bin/mcopy" -V >/dev/null
+}
+
+bundle_installer_tools
+
+payload=$INITRAMFS_TREE/okrainstall-payload
+rm -rf "$payload"
+mkdir -p "$payload"
+cp -a "$PROJECT_ROOT/OKRAINSTALL/bin" "$PROJECT_ROOT/OKRAINSTALL/lib" \
+    "$PROJECT_ROOT/OKRAINSTALL/libexec" "$PROJECT_ROOT/OKRAINSTALL/systemd" \
+    "$payload/"
+cp -a "$PROJECT_ROOT/OKRAINSTALL/stage2-packages.list" "$payload/"
+
+# GRUB for the installed disk (stages 2 and 3). The EFI image searches
+# every partition for /boot/grub2/grub.cfg, so it does not need the UUID
+# baked in. The Tachibana Sherry theme is copied onto the ext4 root.
+require grub2-mkimage
+theme_src=${OKRA_GRUB_THEME:-/home/forge/下载/Tachibana_Sherry_Fedora}
+[ -f "$theme_src/theme.txt" ] || die "GRUB theme missing: $theme_src"
+[ -f "$theme_src/Sarasa.pf2" ] || die "GRUB theme font missing: $theme_src/Sarasa.pf2"
+rm -rf "$payload/grub" "$payload/grub-theme" \
+    "$PROJECT_ROOT/OKRAINSTALL/grub-theme"
+mkdir -p "$payload/grub" "$payload/grub-theme"
+cp -a "$theme_src/." "$payload/grub-theme/"
+cp -a "$payload/grub-theme" "$PROJECT_ROOT/OKRAINSTALL/grub-theme"
+grub2-mkimage -O x86_64-efi -d /usr/lib/grub/x86_64-efi \
+    -o "$payload/grub/BOOTX64.EFI" \
+    -c "$PROJECT_ROOT/OKRAINSTALL/grub/early.cfg" \
+    -p /boot/grub2 \
+    part_gpt part_msdos fat ext2 normal linux configfile \
+    search search_fs_file search_fs_uuid search_label \
+    all_video gfxterm png jpeg font gettext gzio echo boot test \
+    loadenv minicmd cat ls reboot sleep video gfxmenu \
+    gfxterm_background trig bitmap bitmap_scale bufio datetime \
+    keystatus terminal terminfo help efi_gop serial
+install -Dm644 "$payload/grub/BOOTX64.EFI" \
+    "$PROJECT_ROOT/OKRAINSTALL/grub/BOOTX64.EFI"
+log "GRUB EFI image: $payload/grub/BOOTX64.EFI"
+
 log "building initramfs"
 rm -f "$LIVE_BUILD/initramfs-live.img"
 (

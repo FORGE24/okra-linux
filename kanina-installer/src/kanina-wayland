@@ -1,0 +1,17 @@
+#!/bin/bash
+set -euo pipefail
+
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/0}
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+export WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}
+export QT_QPA_PLATFORM=wayland
+export QT_WAYLAND_DISABLE_WINDOWDECORATION=1
+export LD_LIBRARY_PATH=/usr/lib/kanina/qt/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export QT_PLUGIN_PATH=/usr/lib/kanina/qt/plugins
+
+if command -v dbus-run-session >/dev/null 2>&1; then
+    exec dbus-run-session -- /usr/bin/kanina-wayland-session
+fi
+
+exec /usr/bin/kanina-wayland-session

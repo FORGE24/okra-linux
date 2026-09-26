@@ -1,0 +1,131 @@
+#!/bin/bash
+# Build GNU coreutils against OKRALINUX glibc and install into the Base OS.
+# Prefer the source tree 诗狄 prepared at $PROJECT_ROOT/../coreutils-9.12
+# (out-of-tree build so that tree stays readable).
+set -euo pipefail
+source "$(dirname "$0")/common.sh"
+
+require_rootfs
+require gcc
+require make
+
+COREUTILS_SRC="${COREUTILS_SRC:-$PROJECT_ROOT/../coreutils-9.12}"
+SRC_DIR="$LIVE_BUILD/src"
+STAGING="$LIVE_BUILD/gnu-coreutils"
+CC_SYSROOT="gcc --sysroot=$ROOTFS -B$ROOTFS/usr/lib64"
+
+if [ -x "$COREUTILS_SRC/configure" ]; then
+    BUILD_DIR="$SRC_DIR/coreutils-build"
+    log "using prepared source $COREUTILS_SRC"
+else
+    require tar
+    require xz
+    COREUTILS_VER="${COREUTILS_VER:-9.6}"
+    TARBALL="$SRC_DIR/coreutils-${COREUTILS_VER}.tar.xz"
+    COREUTILS_SRC="$SRC_DIR/coreutils-${COREUTILS_VER}"
+    BUILD_DIR="$COREUTILS_SRC"
+    mkdir -p "$SRC_DIR"
+    if [ ! -f "$TARBALL" ]; then
+        log "downloading coreutils $COREUTILS_VER"
+        curl -L --fail -o "$TARBALL" \
+            "https://ftp.gnu.org/gnu/coreutils/coreutils-${COREUTILS_VER}.tar.xz"
+    fi
+    if [ ! -x "$COREUTILS_SRC/configure" ]; then
+        log "extracting $TARBALL"
+        tar -C "$SRC_DIR" -xf "$TARBALL"
+    fi
+fi
+
+mkdir -p "$BUILD_DIR"
+if [ ! -x "$BUILD_DIR/src/ls" ]; then
+    log "configuring coreutils for OKRALINUX (build dir $BUILD_DIR)"
+    (
+        cd "$BUILD_DIR"
+        "$COREUTILS_SRC/configure" \
+            CC="$CC_SYSROOT" \
+            --prefix=/usr \
+            --disable-nls \
+            --without-selinux \
+            --enable-no-install-program=kill,uptime
+        make -j"$JOBS"
+    )
+fi
+
+log "installing GNU coreutils into $ROOTFS"
+rm -rf "$STAGING"
+make -C "$BUILD_DIR" install-exec DESTDIR="$STAGING"
+make -C "$BUILD_DIR" install-exec DESTDIR="$ROOTFS"
+
+n=0
+for f in "$STAGING/usr/bin/"*; do
+    name=$(basename "$f")
+    [ "$name" = "[" ] && continue
+    ln -sfn "../usr/bin/$name" "$ROOTFS/bin/$name"
+    n=$((n+1))
+done
+log "rewired $n /bin names to GNU coreutils"
+
+purge_busybox() {
+    local root="$1"
+    local d link target
+    for d in bin sbin usr/bin usr/sbin; do
+        [ -d "$root/$d" ] || continue
+        for link in "$root/$d"/*; do
+            [ -L "$link" ] || continue
+            target=$(readlink "$link")
+            case "$target" in
+                busybox|*/busybox) rm -f "$link" ;;
+            esac
+        done
+    done
+    rm -f "$root/bin/busybox" "$root/sbin/busybox" "$root/usr/bin/busybox" "$root/usr/sbin/busybox"
+    rm -f "$root/etc/systemd/system/getty@.service.d/busybox.conf" \
+        "$root/etc/systemd/system/serial-getty@.service.d/busybox.conf"
+}
+
+log "removing BusyBox binary and leftover applets from $ROOTFS"
+purge_busybox "$ROOTFS"
+
+copy_missing_libs() {
+    local bin="$1" lib real dest
+    mapfile -t libs < <(ldd "$bin" | awk '/=> \// { print $3 } /^\// { print $1 }')
+    for lib in "${libs[@]}"; do
+        [ -e "$lib" ] || continue
+        case "$lib" in
+            */ld-linux*.so*|*/libc.so*|*/libpthread.so*|*/libm.so.*)
+                continue ;;
+        esac
+        real=$(readlink -f "$lib")
+        dest="$ROOTFS$lib"
+        if [ ! -e "$dest" ]; then
+            install -Dm755 "$real" "$dest"
+        fi
+    done
+}
+
+if [ ! -x "$ROOTFS/bin/bash" ] || [ -L "$ROOTFS/bin/bash" ] || \
+    [ "$(stat -c%s "$ROOTFS/bin/bash")" -lt 1024 ]; then
+    host_bash=$(command -v bash) || die "host bash missing; needed as login shell after BusyBox removal"
+    install -Dm755 "$host_bash" "$ROOTFS/bin/bash"
+fi
+copy_missing_libs "$ROOTFS/bin/bash"
+ln -sfn bash "$ROOTFS/bin/sh"
+ln -sfn bash "$ROOTFS/bin/ash"
+
+# BusyBox used to provide these. GNU coreutils does not.
+for extra in mount umount tar ip ping ping6 ss; do
+    if [ ! -e "$ROOTFS/bin/$extra" ] && [ ! -e "$ROOTFS/usr/bin/$extra" ] && \
+        [ ! -e "$ROOTFS/sbin/$extra" ] && [ ! -e "$ROOTFS/usr/sbin/$extra" ]; then
+        src=$(command -v "$extra") || continue
+        install -Dm755 "$(readlink -f "$src")" "$ROOTFS/usr/bin/$extra"
+        ln -sfn "../usr/bin/$extra" "$ROOTFS/bin/$extra"
+        copy_missing_libs "$ROOTFS/usr/bin/$extra"
+    fi
+done
+if [ -x "$ROOTFS/usr/bin/ip" ]; then
+    ln -sfn ../usr/bin/ip "$ROOTFS/sbin/ip"
+    ln -sfn ../../usr/bin/ip "$ROOTFS/usr/sbin/ip"
+fi
+
+"$ROOTFS/lib64/ld-linux-x86-64.so.2" --library-path "$ROOTFS/lib64" \
+    "$ROOTFS/usr/bin/ls" --version | head -1

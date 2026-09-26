@@ -1,0 +1,20 @@
+[Unit]
+Description=Kanina TUI Installer
+After=systemd-user-sessions.service getty-pre.target
+Before=getty-pre.target
+ConditionPathExists=/usr/bin/kanina-tui
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/kanina-tui
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

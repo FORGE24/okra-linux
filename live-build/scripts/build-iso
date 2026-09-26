@@ -11,7 +11,7 @@ log "building ISO"
 rm -f "$ISO_IMAGE"
 xorriso -as mkisofs \
     -R -r -J \
-    -V OKRALINUX_LIVE \
+    -V OKRALINUX_BASE0 \
     -b boot/limine-bios-cd.bin \
     -no-emul-boot \
     -boot-load-size 4 \

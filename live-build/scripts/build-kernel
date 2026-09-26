@@ -4,8 +4,12 @@ source "$(dirname "$0")/common.sh"
 
 require make
 [ -f "$KERNEL_TREE/.config" ] || die "kernel .config missing"
-log "building kernel"
-make -C "$KERNEL_TREE" -j"$JOBS" bzImage
 mkdir -p "$ISO_ROOT/boot"
+if [ "${FORCE_KERNEL:-0}" != 1 ] && [ -f "$KERNEL_IMAGE" ]; then
+    log "reusing existing kernel $KERNEL_IMAGE (set FORCE_KERNEL=1 to rebuild)"
+else
+    log "building kernel"
+    make -C "$KERNEL_TREE" -j"$JOBS" bzImage
+fi
 cp "$KERNEL_IMAGE" "$ISO_ROOT/boot/vmlinuz"
 log "kernel copied to $ISO_ROOT/boot/vmlinuz"

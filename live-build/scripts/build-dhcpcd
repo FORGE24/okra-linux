@@ -1,0 +1,75 @@
+#!/bin/bash
+# Install dhcpcd into the Base OS.
+set -euo pipefail
+source "$(dirname "$0")/common.sh"
+
+require_rootfs
+
+SRC_DIR="$LIVE_BUILD/src"
+STAGE="$SRC_DIR/dhcpcd-rpm"
+DHCPCD_VER="${DHCPCD_VER:-10.3.2-1.fc44}"
+RPM="$SRC_DIR/dhcpcd-${DHCPCD_VER}.x86_64.rpm"
+
+if [ ! -x "$STAGE/usr/bin/dhcpcd" ]; then
+    mkdir -p "$SRC_DIR"
+    if [ ! -f "$RPM" ]; then
+        log "downloading dhcpcd"
+        if command -v dnf >/dev/null 2>&1; then
+            dnf download --quiet --destdir "$SRC_DIR" dhcpcd
+            shopt -s nullglob
+            downloaded=("$SRC_DIR"/dhcpcd-*.rpm)
+            [ -n "${downloaded:-}" ] || die "dnf download dhcpcd produced no rpm"
+            RPM=${downloaded[0]}
+        else
+            die "dhcpcd staging missing and dnf is not available"
+        fi
+    fi
+    log "extracting $RPM"
+    rm -rf "$STAGE"
+    mkdir -p "$STAGE"
+    rpm2cpio "$RPM" | (cd "$STAGE" && cpio -idm --quiet)
+fi
+
+[ -x "$STAGE/usr/bin/dhcpcd" ] || die "dhcpcd binary missing after extract"
+
+log "installing dhcpcd into $ROOTFS"
+install -Dm755 "$STAGE/usr/bin/dhcpcd" "$ROOTFS/usr/bin/dhcpcd"
+ln -sfn ../bin/dhcpcd "$ROOTFS/usr/sbin/dhcpcd"
+ln -sfn ../usr/bin/dhcpcd "$ROOTFS/bin/dhcpcd"
+ln -sfn bash "$ROOTFS/usr/bin/sh"
+
+install -Dm644 "$STAGE/etc/dhcpcd.conf" "$ROOTFS/etc/dhcpcd.conf"
+if ! grep -q '^allowinterfaces' "$ROOTFS/etc/dhcpcd.conf"; then
+    cat >> "$ROOTFS/etc/dhcpcd.conf" <<'EOF'
+
+# LiveCD / QEMU NICs (skip dummy and loopback).
+allowinterfaces en* eth* ens* enp*
+EOF
+fi
+
+mkdir -p "$ROOTFS/usr/libexec/dhcpcd-hooks"
+install -Dm755 "$STAGE/usr/libexec/dhcpcd-run-hooks" "$ROOTFS/usr/libexec/dhcpcd-run-hooks"
+for hook in 20-resolv.conf 30-hostname; do
+    src="$STAGE/usr/libexec/dhcpcd-hooks/$hook"
+    [ -f "$src" ] && install -Dm644 "$src" "$ROOTFS/usr/libexec/dhcpcd-hooks/$hook"
+done
+
+install -Dm644 "$STAGE/usr/lib/systemd/system/dhcpcd.service" \
+    "$ROOTFS/usr/lib/systemd/system/dhcpcd.service"
+install -Dm644 "$STAGE/usr/lib/systemd/system/dhcpcd@.service" \
+    "$ROOTFS/usr/lib/systemd/system/dhcpcd@.service"
+
+mkdir -p "$ROOTFS/var/lib/dhcpcd" \
+    "$ROOTFS/etc/systemd/system/multi-user.target.wants"
+ln -sfn /usr/lib/systemd/system/dhcpcd.service \
+    "$ROOTFS/etc/systemd/system/multi-user.target.wants/dhcpcd.service"
+
+if [ -f "$ROOTFS/etc/passwd" ] && ! grep -q '^dhcpcd:' "$ROOTFS/etc/passwd"; then
+    printf 'dhcpcd:x:996:996:Minimalistic DHCP client:/var/lib/dhcpcd:/sbin/nologin\n' \
+        >> "$ROOTFS/etc/passwd"
+fi
+if [ -f "$ROOTFS/etc/group" ] && ! grep -q '^dhcpcd:' "$ROOTFS/etc/group"; then
+    printf 'dhcpcd:x:996:\n' >> "$ROOTFS/etc/group"
+fi
+
+log "dhcpcd installed: $ROOTFS/usr/bin/dhcpcd"

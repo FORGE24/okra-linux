@@ -1,0 +1,76 @@
+#!/bin/bash
+set -euo pipefail
+
+BACKEND=${KANINA_BACKEND:-/usr/libexec/kanina-install}
+[ "$(id -u)" -eq 0 ] || { echo 'Kanina Installer must run as root.' >&2; exit 1; }
+[ -x "$BACKEND" ] || { echo "Installer backend not found: $BACKEND" >&2; exit 1; }
+
+pause() { read -r -p 'Press Enter to continue...'; }
+choose_partition() {
+    local title=$1 type=$2
+    local -a items=()
+    while read -r name part_type; do
+        [ "$part_type" = "$type" ] && items+=("$name")
+    done < <(lsblk -lnpo NAME,TYPE)
+    [ "${#items[@]}" -gt 0 ] || { echo "No $title partitions found." >&2; return 1; }
+    echo "$title:"
+    select item in "${items[@]}"; do
+        if [ -n "${item:-}" ]; then
+            REPLY_VALUE=$item
+            return 0
+        fi
+        echo 'Invalid selection.' >&2
+    done
+}
+
+printf '\033[2J\033[H'
+printf '%s\n' '========================================' '          Kanina Installer (TUI)' '========================================' 'Install OkraLinux Base OS 0 using manual partitions.' ''
+read -r -p 'Continue? [y/N] ' answer
+case "$answer" in y|Y) ;; *) exit 0;; esac
+
+mapfile -t disks < <(lsblk -dlnpo NAME,TYPE | awk '$2 == "disk" { print $1 }')
+[ "${#disks[@]}" -gt 0 ] || { echo 'No installation disks found.' >&2; exit 1; }
+echo
+printf '%s\n' 'Installation disk (used for Limine BIOS installation):'
+select disk in "${disks[@]}"; do
+    [ -n "${disk:-}" ] && break
+    echo 'Invalid selection.' >&2
+done
+
+choose_partition 'EFI' part || exit 1
+efi=$REPLY_VALUE
+choose_partition 'root' part || exit 1
+root=$REPLY_VALUE
+
+read -r -p 'Format root partition as ext4? [Y/n] ' format_answer
+format_root=()
+case "$format_answer" in n|N) ;; *) format_root=(--format-root);; esac
+read -r -p 'Hostname [okralinux]: ' hostname
+hostname=${hostname:-okralinux}
+read -r -p 'Username: ' username
+[ -n "$username" ] || { echo 'Username is required.' >&2; exit 1; }
+read -r -s -p 'Password: ' password
+printf '\n'
+read -r -s -p 'Confirm password: ' password_confirm
+printf '\n'
+[ "$password" = "$password_confirm" ] || { echo 'Passwords do not match.' >&2; exit 1; }
+
+cat <<EOF
+
+Review:
+  Disk:     $disk
+  EFI:      $efi
+  Root:     $root
+  Format:   $([ "${#format_root[@]}" -eq 1 ] && echo yes || echo no)
+  Hostname: $hostname
+  User:     $username
+  Boot:     Limine
+EOF
+read -r -p 'Start installation? This may erase the root partition. [y/N] ' confirm
+case "$confirm" in y|Y) ;; *) exit 0;; esac
+
+args=(--disk "$disk" --efi "$efi" --root "$root" --hostname "$hostname" --user "$username" --password-stdin "${format_root[@]}")
+printf '%s\n' 'Installing OkraLinux...'
+printf '%s\n' "$password" | "$BACKEND" "${args[@]}"
+printf '%s\n' '' 'Installation complete. You can reboot now.'
+pause

@@ -1,0 +1,100 @@
+#!/bin/bash
+set -euo pipefail
+
+DISK=''
+EFI=''
+ROOT=''
+HOSTNAME='okralinux'
+USER_NAME=''
+PASSWORD=''
+FORMAT_ROOT=0
+PASSWORD_STDIN=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --disk) DISK="$2"; shift 2;;
+        --efi) EFI="$2"; shift 2;;
+        --root) ROOT="$2"; shift 2;;
+        --hostname) HOSTNAME="$2"; shift 2;;
+        --user) USER_NAME="$2"; shift 2;;
+        --password) PASSWORD="$2"; shift 2;;
+        --password-stdin) PASSWORD_STDIN=1; shift;;
+        --format-root) FORMAT_ROOT=1; shift;;
+        *) echo "unknown argument: $1" >&2; exit 2;;
+    esac
+done
+
+if [ "$PASSWORD_STDIN" -eq 1 ]; then
+    IFS= read -r PASSWORD
+fi
+
+[ "$(id -u)" -eq 0 ] || { echo 'Kanina installer must run as root' >&2; exit 1; }
+[ -b "$EFI" ] && [ -b "$ROOT" ] || { echo 'EFI and root partitions must be block devices' >&2; exit 1; }
+[ -n "$USER_NAME" ] || { echo 'username is required' >&2; exit 1; }
+case "$USER_NAME" in *[!a-zA-Z0-9_-]*|'') echo 'invalid username' >&2; exit 1;; esac
+case "$HOSTNAME" in *[!a-zA-Z0-9.-]*|'') echo 'invalid hostname' >&2; exit 1;; esac
+case "$EFI" in /dev/*) ;; *) echo 'EFI partition must be under /dev' >&2; exit 1;; esac
+case "$ROOT" in /dev/*) ;; *) echo 'root partition must be under /dev' >&2; exit 1;; esac
+
+LIVE_ROOT=${KANINA_LIVE_ROOT:-/run/live/rootfs}
+[ -d "$LIVE_ROOT" ] || LIVE_ROOT=/run/media/rootfs
+[ -d "$LIVE_ROOT" ] || { echo 'live rootfs is not available' >&2; exit 1; }
+
+WORK=$(mktemp -d /tmp/kanina.XXXXXX)
+cleanup() { umount -R "$WORK/target" 2>/dev/null || true; rm -rf "$WORK"; }
+trap cleanup EXIT
+mkdir -p "$WORK/target" "$WORK/efi"
+
+if [ "$FORMAT_ROOT" -eq 1 ]; then
+    echo 'formatting root partition' >&2
+    mkfs.ext4 -F "$ROOT"
+fi
+
+if [ -n "$DISK" ] && [ "$DISK" != "$ROOT" ] && [ "$DISK" != "$EFI" ]; then
+    case "$DISK" in /dev/*) ;; *) echo 'disk must be under /dev' >&2; exit 1;; esac
+fi
+mount "$ROOT" "$WORK/target"
+mount "$EFI" "$WORK/target/boot/efi" 2>/dev/null || { mkdir -p "$WORK/target/boot/efi"; mount "$EFI" "$WORK/target/boot/efi"; }
+
+echo 'copying OkraLinux root filesystem'
+rsync -aHAX --delete --exclude=/dev/* --exclude=/proc/* --exclude=/sys/* --exclude=/run/* "$LIVE_ROOT/" "$WORK/target/"
+mkdir -p "$WORK/target/etc" "$WORK/target/boot/limine" "$WORK/target/home/$USER_NAME"
+install -d -m 700 "$WORK/target/home/$USER_NAME"
+
+ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
+EFI_UUID=$(blkid -s UUID -o value "$EFI")
+cat > "$WORK/target/etc/fstab" <<EOF
+UUID=$ROOT_UUID / ext4 defaults 0 1
+UUID=$EFI_UUID /boot/efi vfat umask=0077 0 2
+EOF
+printf '%s\n' "$HOSTNAME" > "$WORK/target/etc/hostname"
+
+if command -v useradd >/dev/null 2>&1; then
+    useradd -R "$WORK/target" -m -s /bin/bash "$USER_NAME"
+    if [ -n "$PASSWORD" ] && command -v chpasswd >/dev/null 2>&1; then
+        printf '%s:%s\n' "$USER_NAME" "$PASSWORD" | chpasswd -R "$WORK/target"
+    fi
+fi
+
+KERNEL=${KANINA_KERNEL:-/run/live/boot/vmlinuz}
+[ -f "$KERNEL" ] || KERNEL=/boot/vmlinuz
+[ -f "$KERNEL" ] && cp "$KERNEL" "$WORK/target/boot/vmlinuz"
+INITRAMFS=${KANINA_INITRAMFS:-/run/live/boot/initramfs-live.img}
+[ -f "$INITRAMFS" ] && cp "$INITRAMFS" "$WORK/target/boot/initramfs-live.img"
+cat > "$WORK/target/boot/limine/limine.conf" <<EOF
+ timeout: 5
+
+/OkraLinux
+    protocol: linux
+    kernel_path: boot():/boot/vmlinuz
+    module_path: boot():/boot/initramfs-live.img
+    cmdline: root=UUID=$ROOT_UUID rw
+EOF
+
+LIMINE_BIN=${KANINA_LIMINE_BIN:-$(command -v limine || true)}
+if [ -n "$LIMINE_BIN" ] && [ -n "$DISK" ]; then
+    "$LIMINE_BIN" bios-install "$DISK"
+else
+    echo 'warning: Limine BIOS installation skipped; provide KANINA_LIMINE_BIN and a target disk' >&2
+fi
+
+echo 'OkraLinux installation finished'

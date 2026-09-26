@@ -1,5 +1,7 @@
 # OkraLinux
 
+All Okra documentation lives in `git@github.com:OkraLinux/DOCS.git`. This file only keeps the build entry points for this repository.
+
 OkraLinux is the distribution build project for the OkraLinux LiveCD.
 It assembles the Linux kernel, initramfs, root filesystem, SquashFS image,
 and Limine BIOS/UEFI ISO.
@@ -11,6 +13,8 @@ live-build/
 ├── initramfs/       initramfs staging tree
 ├── iso-root/        ISO staging tree and Limine configuration
 └── scripts/         reproducible build and test stages
+OKRAINSTALL/         three-stage TUI installer (default on LiveCD)
+kanina-installer/    optional Qt 6 installer
 ```
 
 The kernel source and the working root filesystem are external inputs by
@@ -38,6 +42,8 @@ The pipeline runs these stages in order:
 ```text
 build-kernel
 build-rootfs
+build-coreutils
+build-dhcpcd
 build-initramfs
 build-squashfs
 build-iso
@@ -55,6 +61,7 @@ To run individual stages:
 ```bash
 live-build/scripts/build-kernel
 live-build/scripts/build-rootfs
+live-build/scripts/build-coreutils
 live-build/scripts/build-initramfs
 live-build/scripts/build-squashfs
 live-build/scripts/build-iso
@@ -65,6 +72,7 @@ Useful overrides:
 
 ```bash
 JOBS=4 SKIP_QEMU=1 live-build/scripts/build-livecd
+FORCE_KERNEL=1 SKIP_QEMU=1 live-build/scripts/build-livecd
 QEMU_MEMORY=4G QEMU_SMP=4 live-build/scripts/test-qemu
 ```
 

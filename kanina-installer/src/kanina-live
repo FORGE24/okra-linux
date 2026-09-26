@@ -1,0 +1,22 @@
+#!/bin/bash
+set -euo pipefail
+
+GUI=/usr/bin/kanina-installer
+TUI=/usr/bin/kanina-tui
+export QT_PLUGIN_PATH=${KANINA_QT_PLUGIN_PATH:-/usr/lib/kanina/qt/plugins}
+export LD_LIBRARY_PATH=${KANINA_QT_LIB_PATH:-/usr/lib/kanina/qt/lib}:${LD_LIBRARY_PATH:-}
+
+if [ -x /usr/bin/kanina-wayland ] && command -v weston >/dev/null 2>&1; then
+    exec /usr/bin/kanina-wayland
+fi
+
+if [ -x "$GUI" ] && { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }; then
+    exec "$GUI"
+fi
+
+if [ -x "$TUI" ]; then
+    exec "$TUI"
+fi
+
+printf '%s\n' 'Kanina Installer is not available.' >&2
+exit 1

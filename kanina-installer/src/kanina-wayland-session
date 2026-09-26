@@ -1,0 +1,45 @@
+#!/bin/bash
+set -u
+
+LOG=/run/kanina.log
+exec > >(tee -a "$LOG" /dev/console) 2>&1
+printf '\nKanina session starting\n'
+
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/0}
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+export WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}
+export QT_QPA_PLATFORM=wayland
+export QT_PLUGIN_PATH=/usr/lib/kanina/qt/plugins
+export LD_LIBRARY_PATH=/usr/lib/kanina/qt/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
+if ! command -v weston >/dev/null 2>&1; then
+    printf 'weston not found\n'
+    exec /usr/bin/kanina-tui
+fi
+
+rm -f "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+printf 'Starting Weston with DRM backend and input override\n'
+printf 'Weston config: /usr/lib/kanina/weston.ini\n'
+weston --backend=drm-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 --config=/usr/lib/kanina/weston.ini --log=/run/weston.log 2>&1 &
+compositor=$!
+
+for _ in $(seq 1 30); do
+    if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
+        printf 'Weston ready, launching full-screen Kanina\n'
+        exec /usr/bin/kanina-installer --fullscreen
+    fi
+    if ! kill -0 "$compositor" 2>/dev/null; then
+        printf 'Weston exited\n'
+        if [ -f /run/weston.log ]; then
+            printf '%s\n' '--- /run/weston.log ---'
+            cat /run/weston.log
+            printf '%s\n' '--- end weston.log ---'
+        fi
+        break
+    fi
+    sleep 1
+done
+
+printf 'Weston failed; starting TUI\n'
+exec /usr/bin/kanina-tui

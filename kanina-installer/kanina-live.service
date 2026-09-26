@@ -1,0 +1,22 @@
+[Unit]
+Description=Kanina LiveCD Installer
+Wants=systemd-user-sessions.service systemd-logind.service
+After=systemd-user-sessions.service systemd-logind.service local-fs.target systemd-udev-settle.service
+Before=getty@tty1.service
+Conflicts=getty@tty1.service
+ConditionPathExists=/usr/bin/kanina-live
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/kanina-live
+StandardInput=tty
+StandardOutput=journal+console
+StandardError=journal+console
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

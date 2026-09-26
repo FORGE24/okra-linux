@@ -1,0 +1,12 @@
+[Unit]
+Description=Kanina Installer
+After=graphical.target
+ConditionPathExists=/usr/bin/kanina-installer
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/kanina-installer
+Restart=no
+
+[Install]
+WantedBy=graphical.target

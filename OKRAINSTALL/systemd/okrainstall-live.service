@@ -1,0 +1,24 @@
+[Unit]
+Description=OKRAINSTALL LiveCD stage 1
+Documentation=file:///usr/lib/okrainstall
+After=systemd-user-sessions.service local-fs.target
+Before=getty@tty1.service
+ConditionPathExists=/usr/bin/okrainstall
+ConditionPathExists=/run/live/rootfs
+Conflicts=getty@tty1.service kanina-live.service kanina-tui.service okrainstall-continue.service
+
+[Service]
+Type=simple
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/okrainstall
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

@@ -2,22 +2,29 @@
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
-require_rootfs() {
-    [ -d "$ROOTFS" ] || die "rootfs does not exist: $ROOTFS"
-    [ -x "$ROOTFS/usr/lib/systemd/systemd" ] || die "systemd missing from rootfs"
-}
-
 if [ "${FEDORA_ROOTFS:-0}" = 1 ]; then
+    [ "$(id -u)" -eq 0 ] || die "FEDORA_ROOTFS=1 requires root; run the LiveCD build with sudo"
+    okralinux_root=$(cd "$PROJECT_ROOT/../OKRALINUX" 2>/dev/null && pwd -P || true)
+    rootfs_real=$(cd "$ROOTFS" 2>/dev/null && pwd -P || printf '%s\n' "$ROOTFS")
+    if [ -n "$okralinux_root" ] && [ "$rootfs_real" = "$okralinux_root" ]; then
+        ROOTFS="$PROJECT_ROOT/../rootfs"
+        log "FEDORA_ROOTFS=1 refused to overwrite OKRALINUX; using $ROOTFS"
+    fi
     require dnf
     log "building Fedora rootfs"
     rm -rf "$ROOTFS"
     mkdir -p "$ROOTFS"
     dnf -y --installroot="$ROOTFS" \
+        --use-host-config \
         --releasever="${FEDORA_RELEASE:-latest}" \
+        --disablerepo='*' \
+        --enablerepo=fedora \
+        --enablerepo=updates \
         --setopt=install_weak_deps=False \
         --setopt=keepcache=False \
         install systemd bash coreutils util-linux kmod iproute procps-ng \
-        filesystem setup shadow-utils
+        filesystem setup shadow-utils weston seatd dbus dbus-daemon \
+        mesa-dri-drivers libglvnd-glx libglvnd-egl libglvnd-opengl libinput libinput-utils xkeyboard-config fontconfig dejavu-sans-fonts adwaita-icon-theme
     mkdir -p "$ROOTFS/etc" "$ROOTFS/var/lib/rpm" "$ROOTFS/run" "$ROOTFS/tmp"
     : > "$ROOTFS/etc/machine-id"
     printf 'okralinux\n' > "$ROOTFS/etc/hostname"
@@ -25,6 +32,128 @@ if [ "${FEDORA_ROOTFS:-0}" = 1 ]; then
     chmod 1777 "$ROOTFS/tmp"
 else
     require_rootfs
+fi
+
+if [ "${FEDORA_ROOTFS:-0}" = 1 ]; then
+    INSTALL_OKRAINSTALL="${INSTALL_OKRAINSTALL:-1}"
+    INSTALL_KANINA="${INSTALL_KANINA:-0}"
+else
+    INSTALL_OKRAINSTALL="${INSTALL_OKRAINSTALL:-1}"
+    INSTALL_KANINA="${INSTALL_KANINA:-0}"
+fi
+
+OKRAINSTALL_DIR="$PROJECT_ROOT/OKRAINSTALL"
+if [ "$INSTALL_OKRAINSTALL" = 1 ] && [ -x "$OKRAINSTALL_DIR/install-into-rootfs.sh" ]; then
+    log "installing OKRAINSTALL TUI installer"
+    "$OKRAINSTALL_DIR/install-into-rootfs.sh" "$ROOTFS"
+    ln -sf /dev/null "$ROOTFS/etc/systemd/system/serial-getty@ttyS0.service"
+fi
+
+KANINA_DIR="$PROJECT_ROOT/kanina-installer"
+QT_ROOT="${QT_ROOT:-$PROJECT_ROOT/../qt611/6.11.2/gcc_64}"
+if [ "$INSTALL_KANINA" = 1 ] && [ -f "$KANINA_DIR/src/kanina-install" ]; then
+    install -Dm755 "$KANINA_DIR/src/kanina-install" "$ROOTFS/usr/libexec/kanina-install"
+    install -Dm755 "$KANINA_DIR/src/kanina-tui" "$ROOTFS/usr/bin/kanina-tui"
+    install -Dm755 "$KANINA_DIR/src/kanina-live" "$ROOTFS/usr/bin/kanina-live"
+    install -Dm755 "$KANINA_DIR/src/kanina-wayland" "$ROOTFS/usr/bin/kanina-wayland"
+    install -Dm755 "$KANINA_DIR/src/kanina-wayland-session" "$ROOTFS/usr/bin/kanina-wayland-session"
+    install -Dm644 "$KANINA_DIR/kanina-tui.service" "$ROOTFS/usr/lib/systemd/system/kanina-tui.service"
+    install -Dm644 "$KANINA_DIR/kanina-live.service" "$ROOTFS/usr/lib/systemd/system/kanina-live.service"
+    install -Dm644 "$KANINA_DIR/kanina-installer.service" "$ROOTFS/usr/lib/systemd/system/kanina-installer.service"
+    install -Dm644 "$KANINA_DIR/weston.ini" "$ROOTFS/usr/lib/kanina/weston.ini"
+    mkdir -p "$ROOTFS/etc/systemd/system/multi-user.target.wants"
+    # Prefer OKRAINSTALL on tty1 when both are present.
+    if [ "$INSTALL_OKRAINSTALL" != 1 ]; then
+        ln -sf /usr/lib/systemd/system/kanina-live.service "$ROOTFS/etc/systemd/system/multi-user.target.wants/kanina-live.service"
+        mkdir -p "$ROOTFS/etc/systemd/system/getty.target.wants"
+        rm -f "$ROOTFS/etc/systemd/system/getty.target.wants/getty@tty1.service"
+        ln -sf /usr/lib/systemd/system/getty@.service "$ROOTFS/etc/systemd/system/getty.target.wants/getty@tty2.service"
+        ln -sf /usr/lib/systemd/system/getty@.service "$ROOTFS/etc/systemd/system/getty.target.wants/getty@tty3.service"
+    else
+        rm -f "$ROOTFS/etc/systemd/system/multi-user.target.wants/kanina-live.service"
+    fi
+    ln -sf /dev/null "$ROOTFS/etc/systemd/system/serial-getty@ttyS0.service"
+    mkdir -p "$ROOTFS/etc/systemd/system/multi-user.target.wants"
+    ln -sf /usr/lib/systemd/system/seatd.service "$ROOTFS/etc/systemd/system/multi-user.target.wants/seatd.service"
+    rm -f "$ROOTFS/etc/systemd/system/multi-user.target.wants/kanina-tui.service" "$ROOTFS/etc/systemd/system/graphical.target.wants/kanina-installer.service"
+    if command -v cmake >/dev/null 2>&1 && [ -f "$KANINA_DIR/CMakeLists.txt" ]; then
+        cmake_args=()
+        [ -f "$QT_ROOT/lib/cmake/Qt6/Qt6Config.cmake" ] && cmake_args+=("-DCMAKE_PREFIX_PATH=$QT_ROOT")
+        cmake_args+=("-DCMAKE_INSTALL_RPATH=/usr/lib/kanina/qt/lib")
+        if cmake -S "$KANINA_DIR" -B "$KANINA_DIR/build" "${cmake_args[@]}" >/dev/null 2>&1 && cmake --build "$KANINA_DIR/build" --parallel "$JOBS" >/dev/null 2>&1; then
+            install -Dm755 "$KANINA_DIR/build/kanina-installer" "$ROOTFS/usr/bin/kanina-installer"
+            install -Dm644 "$KANINA_DIR/kanina-installer.service" "$ROOTFS/usr/lib/systemd/system/kanina-installer.service"
+            mkdir -p "$ROOTFS/usr/lib/kanina/qt"
+            if [ -d "$QT_ROOT/lib" ]; then cp -a "$QT_ROOT/lib" "$ROOTFS/usr/lib/kanina/qt/"; fi
+            if [ -d "$QT_ROOT/plugins" ]; then cp -a "$QT_ROOT/plugins" "$ROOTFS/usr/lib/kanina/qt/"; fi
+            if [ -f "$QT_ROOT/plugins/platforms/libqwayland.so" ]; then
+                install -Dm755 "$QT_ROOT/plugins/platforms/libqwayland.so" "$ROOTFS/usr/lib/kanina/qt/plugins/platforms/libqwayland.so"
+            fi
+        else
+            log "Qt6 not available; installed Kanina backend only"
+        fi
+    fi
+fi
+
+log "branding OkraLinux Base OS 0"
+mkdir -p "$ROOTFS/usr/lib" "$ROOTFS/etc"
+cat > "$ROOTFS/usr/lib/os-release" <<'EOF'
+NAME="OkraLinux Base OS"
+VERSION="0"
+ID=okralinux
+VERSION_ID=0
+PRETTY_NAME="OkraLinux Base OS 0"
+ANSI_COLOR="0;32"
+HOME_URL="https://github.com/OkraLinux/okra-linux"
+DEFAULT_HOSTNAME="okralinux"
+EOF
+ln -sfn ../usr/lib/os-release "$ROOTFS/etc/os-release"
+printf 'okralinux\n' > "$ROOTFS/etc/hostname"
+cat > "$ROOTFS/etc/issue" <<'EOF'
+OkraLinux Base OS 0
+Kernel \r on \m (\l)
+
+EOF
+mkdir -p "$ROOTFS/usr/share/factory/etc"
+cp -f "$ROOTFS/etc/issue" "$ROOTFS/usr/share/factory/etc/issue"
+rm -f "$ROOTFS/etc/fedora-release" "$ROOTFS/usr/lib/fedora-release"
+cat > "$ROOTFS/etc/fstab" <<'EOF'
+# LiveCD: proc/sys/dev/run are already mounted by the initramfs.
+EOF
+ln -sfn /dev/null "$ROOTFS/etc/systemd/system/tmp.mount"
+
+if [ "${FEDORA_ROOTFS:-0}" != 1 ]; then
+    log "installing autologin getty units for Base OS 0"
+    mkdir -p \
+        "$ROOTFS/etc/systemd/system/getty@.service.d" \
+        "$ROOTFS/etc/systemd/system/serial-getty@.service.d" \
+        "$ROOTFS/etc/systemd/system/getty.target.wants"
+    rm -f \
+        "$ROOTFS/etc/systemd/system/getty@.service.d/busybox.conf" \
+        "$ROOTFS/etc/systemd/system/serial-getty@.service.d/busybox.conf"
+    cat > "$ROOTFS/etc/systemd/system/getty@.service.d/autologin.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/bin/bash -l
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/%I
+EOF
+    cat > "$ROOTFS/etc/systemd/system/serial-getty@.service.d/autologin.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/bin/bash -l
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/%I
+EOF
+    ln -sfn /usr/lib/systemd/system/getty@.service \
+        "$ROOTFS/etc/systemd/system/getty.target.wants/getty@tty1.service"
+    ln -sfn /usr/lib/systemd/system/serial-getty@.service \
+        "$ROOTFS/etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service"
+    mkdir -p "$ROOTFS/etc/systemd/system/multi-user.target.wants"
+    ln -sfn /usr/lib/systemd/system/getty.target \
+        "$ROOTFS/etc/systemd/system/multi-user.target.wants/getty.target"
 fi
 
 log "using rootfs"

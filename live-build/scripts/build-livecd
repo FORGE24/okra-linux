@@ -4,6 +4,8 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 "$SCRIPT_DIR/build-kernel"
 "$SCRIPT_DIR/build-rootfs"
+"$SCRIPT_DIR/build-coreutils"
+"$SCRIPT_DIR/build-dhcpcd"
 "$SCRIPT_DIR/build-initramfs"
 "$SCRIPT_DIR/build-squashfs"
 "$SCRIPT_DIR/build-iso"
